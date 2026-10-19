@@ -1,18 +1,26 @@
-// ===== MỘT CÁCH TRẢ VỀ DUY NHẤT CHO MỌI ENDPOINT /api =====
-// Thành công: { success:true, data, meta? }
-// Thất bại  : { success:false, error:{ type, code, message, details?, requestId } }
+// ===== QUY ƯỚC TRẢ KẾT QUẢ CỦA /api (theo đề: REST API và SPA) =====
+// Thành công          : HTTP 200  { ok:true,  data, meta? }        (xóa thành công: data = null)
+// Lỗi NGHIỆP VỤ đã biết: HTTP 200  { ok:false, error:{ code, message, fields? } }
+//                         NOT_FOUND, VALIDATION_FAILED (có fields theo từng ô nhập), ALREADY_EXISTS, RESOURCE_IN_USE...
+// Lỗi KỸ THUẬT        : HTTP 4xx/5xx { error:{ code, message, requestId } }  -> KHÔNG có "ok", KHÔNG theo shape nghiệp vụ
+//                         sai URL /api -> 404, body JSON hỏng -> 400, DB sập / lỗi server -> 500
+// Frontend dựa vào error.code (không so sánh câu chữ trong message).
 
-function ok(res, data, { status = 200, meta } = {}) {
-  const body = { success: true, data };
+function ok(res, data, { meta } = {}) {
+  const body = { ok: true, data };
   if (meta) body.meta = meta;
-  return res.status(status).json(body);
+  return res.status(200).json(body);
 }
 
-function fail(res, { status, type, code, message, details }) {
-  const error = { type, code, message };
-  if (details && Object.keys(details).length) error.details = details;
-  error.requestId = res.req.requestId;
-  return res.status(status).json({ success: false, error });
+function fail(res, { status, type, code, message, fields }) {
+  if (type === "business") {
+    const error = { code, message };
+    if (fields && Object.keys(fields).length) error.fields = fields;
+    return res.status(200).json({ ok: false, error });
+  }
+  return res
+    .status(status)
+    .json({ error: { code, message, requestId: res.req.requestId } });
 }
 
 module.exports = { ok, fail };

@@ -19,7 +19,9 @@ let dangChuyen = false;
 export function addRoute(pattern, load, { role } = {}) {
   const keys = [];
   const re = new RegExp(
-    "^" + pattern.replace(/:(\w+)/g, (_, k) => (keys.push(k), "([^/]+)")) + "/?$",
+    "^" +
+      pattern.replace(/:(\w+)/g, (_, k) => (keys.push(k), "([^/]+)")) +
+      "/?$",
   );
   routes.push({ re, keys, load, role });
 }
@@ -27,7 +29,13 @@ export function addRoute(pattern, load, { role } = {}) {
 function khop(path) {
   for (const r of routes) {
     const m = r.re.exec(path);
-    if (m) return { route: r, params: Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])])) };
+    if (m)
+      return {
+        route: r,
+        params: Object.fromEntries(
+          r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]),
+        ),
+      };
   }
   return null;
 }
@@ -35,7 +43,8 @@ function khop(path) {
 // Tạo view cho một URL. Lỗi API được đổi thành màn hình lỗi tương ứng (404, 403, mất kết nối...)
 async function taoView(url, ctx) {
   const found = khop(url.pathname);
-  if (!found) return errorView(404, "Không tìm thấy trang hoặc dữ liệu bạn yêu cầu.");
+  if (!found)
+    return errorView(404, "Không tìm thấy trang hoặc dữ liệu bạn yêu cầu.");
   ctx.params = found.params;
   try {
     if (found.route.role) {
@@ -50,23 +59,40 @@ async function taoView(url, ctx) {
       console.error(e);
       return errorView(500, "Có lỗi xảy ra phía giao diện.");
     }
-    if (e.status === 401) {
+    if (e.code === "UNAUTHORIZED") {
       setRole(null);
       return { redirect: "/login" };
     }
-    if (e.status === 403) return errorView(403, e.message);
-    if (e.status === 404) return errorView(404, e.message);
-    return errorView(e.status, e.message, true);
+    if (e.code === "FORBIDDEN") return errorView(403, e.message);
+    // NOT_FOUND nghiệp vụ (API trả 200 + ok:false): không có bản ghi -> màn hình "không tìm thấy"
+    if (e.code === "NOT_FOUND") return errorView(404, e.message);
+    // gọi sai URL API (HTTP 404 kỹ thuật) KHÔNG phải NOT_FOUND nghiệp vụ -> thông báo lỗi chung
+    if (e.code === "ROUTE_NOT_FOUND")
+      return errorView(
+        500,
+        "Không gọi được API (đường dẫn API không đúng). Vui lòng thử lại sau.",
+        true,
+      );
+    // lỗi kỹ thuật khác (500, mất kết nối...) hoặc lỗi nghiệp vụ không lường trước (status 200)
+    return errorView(e.status === 200 ? 400 : e.status, e.message, true);
   }
 }
 
 // to: "/đường/dẫn?query"; fx: hiệu ứng chuyển cảnh (xem effects.js); flash: thông báo hiện sau khi chuyển xong
-export async function navigate(to, { replace = false, fx = null, flash = null, fromPop = false } = {}) {
+export async function navigate(
+  to,
+  { replace = false, fx = null, flash = null, fromPop = false } = {},
+) {
   if (dangChuyen) return;
   const url = new URL(to, location.origin);
   const my = ++navId;
   if (fx) dangChuyen = true;
-  const ctx = { path: url.pathname, query: url.searchParams, params: {}, ac: new AbortController() };
+  const ctx = {
+    path: url.pathname,
+    query: url.searchParams,
+    params: {},
+    ac: new AbortController(),
+  };
   ctx.signal = ctx.ac.signal;
   document.body.classList.add("dang-tai");
   let h = null;
@@ -87,7 +113,8 @@ export async function navigate(to, { replace = false, fx = null, flash = null, f
     }
     if (!fromPop) {
       const dich = url.pathname + url.search;
-      if (replace || dich === location.pathname + location.search) history.replaceState(null, "", dich);
+      if (replace || dich === location.pathname + location.search)
+        history.replaceState(null, "", dich);
       else history.pushState(null, "", dich);
     }
     hienThi(view, ctx, fx);
@@ -107,7 +134,8 @@ function hienThi(view, ctx, fx) {
   appEl.innerHTML = view.html;
   hienTai = ctx;
   // chuyển bằng đĩa trắng rồi thì không cần hiệu ứng trượt vào của riêng màn hình (như bản cũ)
-  if (fx && fx.type === "dia") appEl.querySelector(".vao-tu-duoi")?.classList.remove("vao-tu-duoi");
+  if (fx && fx.type === "dia")
+    appEl.querySelector(".vao-tu-duoi")?.classList.remove("vao-tu-duoi");
   try {
     view.mount?.(appEl, ctx);
   } catch (e) {
@@ -119,15 +147,36 @@ export function start(el) {
   appEl = el;
   // bấm link nội bộ -> điều hướng SPA thay vì tải trang
   document.addEventListener("click", (e) => {
-    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (
+      e.defaultPrevented ||
+      e.button !== 0 ||
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey
+    )
+      return;
     const a = e.target.closest && e.target.closest("a[href]");
-    if (!a || a.target === "_blank" || a.hasAttribute("download") || a.classList.contains("tat")) return;
+    if (
+      !a ||
+      a.target === "_blank" ||
+      a.hasAttribute("download") ||
+      a.classList.contains("tat")
+    )
+      return;
     const u = new URL(a.href, location.href);
     if (u.origin !== location.origin || u.pathname.startsWith("/api/")) return;
     e.preventDefault();
-    navigate(u.pathname + u.search, { fx: chonFx(location.pathname, u.pathname, a) });
+    navigate(u.pathname + u.search, {
+      fx: chonFx(location.pathname, u.pathname, a),
+    });
   });
   // nút Back / Forward của trình duyệt
-  addEventListener("popstate", () => navigate(location.pathname + location.search, { fromPop: true }));
-  navigate(location.pathname + location.search, { replace: true, fromPop: true });
+  addEventListener("popstate", () =>
+    navigate(location.pathname + location.search, { fromPop: true }),
+  );
+  navigate(location.pathname + location.search, {
+    replace: true,
+    fromPop: true,
+  });
 }

@@ -1,12 +1,14 @@
-// ===== REST API (JSON) =====  gắn tại /api, khớp hợp đồng trong API.md
+// ===== REST API (JSON) =====  gắn tại /api, khớp hợp đồng trong API.md (đề: REST API và SPA)
 //   GET    /api/health
-//   GET    /api/auth/me | POST /api/auth/login {role} | POST /api/auth/logout (204)
+//   GET    /api/auth/me | POST /api/auth/login {role} | POST /api/auth/logout
 //   GET    /api/options                      công khai: categories, units, limits
 //   GET    /api/dishes[/:id]                 công khai   ?q=&page= | ?all=true
 //   GET    /api/chefs[/:id], /api/ingredients[/:id]   chỉ admin
-//   POST   /api/:resource                    admin -> 201 (+ Location). Món ăn: multipart (có ảnh); còn lại: JSON
-//   PUT    /api/:resource/:id                admin -> 200 (thay toàn bộ; món ăn không gửi ảnh = giữ ảnh cũ)
-//   DELETE /api/:resource/:id                admin -> 204 (bị chặn -> 409)
+//   POST   /api/:resource                    admin -> { ok:true, data: bản ghi mới }. Món ăn: multipart (có ảnh); còn lại: JSON
+//   PATCH  /api/:resource/:id                admin -> { ok:true, data: bản ghi sau sửa }. Trường nào không gửi thì giữ nguyên
+//                                            (món ăn không gửi ảnh = giữ ảnh cũ)
+//   DELETE /api/:resource/:id                admin -> { ok:true, data:null } (bị chặn -> ok:false, RESOURCE_IN_USE)
+// Mọi kết quả thành công và lỗi nghiệp vụ đều HTTP 200 (ok:true / ok:false); sai URL /api -> 404; hỏng hệ thống -> 500.
 // Hình dạng phản hồi + mã lỗi: src/api/response.js, src/api/errors.js
 const express = require("express");
 const multer = require("multer");
@@ -21,7 +23,13 @@ const { PER_PAGE } = require("../utils/paginate");
 const { uploadImage, removeImage, EXT } = require("../utils/storage");
 const { ApiError } = require("../api/errors");
 const { ok } = require("../api/response");
-const { requestId, cors, requireAdminApi, apiNotFound, apiErrorHandler } = require("../api/middleware");
+const {
+  requestId,
+  cors,
+  requireAdminApi,
+  apiNotFound,
+  apiErrorHandler,
+} = require("../api/middleware");
 const serialize = require("../api/serializers");
 
 const router = express.Router();
@@ -30,8 +38,19 @@ router.use(requestId);
 router.use(cors);
 router.use(express.json({ limit: "100kb" }));
 
-const NOT_FOUND = { dishes: "DISH_NOT_FOUND", chefs: "CHEF_NOT_FOUND", ingredients: "INGREDIENT_NOT_FOUND" };
-const SERIALIZER = { dishes: serialize.dish, chefs: serialize.chef, ingredients: serialize.ingredient };
+// mọi tài nguyên dùng chung mã NOT_FOUND, chỉ khác câu thông báo
+const NOT_FOUND_MSG = {
+  dishes: "Không tìm thấy món ăn.",
+  chefs: "Không tìm thấy đầu bếp.",
+  ingredients: "Không tìm thấy nguyên liệu.",
+};
+const notFound = (r) =>
+  new ApiError("NOT_FOUND", { message: NOT_FOUND_MSG[r.key] });
+const SERIALIZER = {
+  dishes: serialize.dish,
+  chefs: serialize.chef,
+  ingredients: serialize.ingredient,
+};
 const byName = (a, b) => a.name.localeCompare(b.name, "vi");
 
 // ---------------------------------------------------------------- health
@@ -54,9 +73,9 @@ router.post("/auth/login", (req, res, next) => {
   const role = req.body && req.body.role;
   if (!ROLES.includes(role)) {
     return next(
-      new ApiError("VALIDATION_ERROR", {
+      new ApiError("VALIDATION_FAILED", {
         message: "Vui lòng chọn role hợp lệ (user hoặc admin).",
-        details: { role: "Role không hợp lệ" },
+        fields: { role: "Role không hợp lệ" },
       }),
     );
   }
@@ -65,11 +84,13 @@ router.post("/auth/login", (req, res, next) => {
 });
 router.post("/auth/logout", (req, res) => {
   res.clearCookie("role");
-  res.status(204).end();
+  ok(res, null);
 });
 
 // ---------------------------------------------------------------- dữ liệu dùng chung cho form
-router.get("/options", (req, res) => ok(res, { categories: CATEGORIES, units: UNITS, limits: LIMITS }));
+router.get("/options", (req, res) =>
+  ok(res, { categories: CATEGORIES, units: UNITS, limits: LIMITS }),
+);
 
 // ---------------------------------------------------------------- upload ảnh (chỉ món ăn)
 const upload = multer({
@@ -80,20 +101,24 @@ const upload = multer({
     cb(null, !!EXT[file.mimetype]);
   },
 });
-// lỗi ảnh không làm sập request mà đưa vào details.image
+// lỗi ảnh không làm sập request mà đưa vào fields.image
 const nhanAnh = (req, res, next) => {
   if (!req.is("multipart/form-data")) return next();
   upload.single("image")(req, res, (err) => {
     if (err)
-      req.loiAnh = err.code === "LIMIT_FILE_SIZE" ? "Ảnh tối đa 3MB" : "Không đọc được ảnh, vui lòng thử lại";
+      req.loiAnh =
+        err.code === "LIMIT_FILE_SIZE"
+          ? "Ảnh tối đa 3MB"
+          : "Không đọc được ảnh, vui lòng thử lại";
     next();
   });
 };
 
 // ---------------------------------------------------------------- helpers
-function getId(req) {
+// id sai kiểu (abc, -1, 1.5...) được kiểm tra TRƯỚC khi chạm DB và xử lý như "không tìm thấy bản ghi"
+function getId(req, r) {
   const id = parseId(req.params.id);
-  if (!id) throw new ApiError("INVALID_ID");
+  if (!id) throw notFound(r);
   return id;
 }
 
@@ -107,10 +132,13 @@ function toForm(r, body) {
     const v = body[f.name];
     if (f.type === "checkbox") {
       if (v === true || v === "true" || v === "on") form[f.name] = "on";
-      else if (!(v === false || v === "false")) typeErrors[f.name] = "Phải là true hoặc false";
+      else if (v === false || v === "false" || v === "off")
+        form[f.name] = "off";
+      else typeErrors[f.name] = "Phải là true hoặc false";
     } else if (f.type === "multiselect") {
       const arr = Array.isArray(v) ? v : v === undefined || v === "" ? [] : [v]; // multipart: 1 giá trị = chuỗi
-      if (arr.some((x) => typeof x !== "number" && typeof x !== "string")) typeErrors[f.name] = "Phải là một mảng id";
+      if (arr.some((x) => typeof x !== "number" && typeof x !== "string"))
+        typeErrors[f.name] = "Phải là một mảng id";
       else form[f.name] = arr.map(String);
     } else if (v === null) {
       form[f.name] = "";
@@ -123,7 +151,7 @@ function toForm(r, body) {
   return { form, typeErrors };
 }
 
-// kiểm tra file ảnh đọc được thật sự (đúng mimetype nhưng file hỏng -> 400 details.image thay vì 500)
+// kiểm tra file ảnh đọc được thật sự (đúng mimetype nhưng file hỏng -> VALIDATION_FAILED fields.image thay vì 500)
 async function checkImage(file) {
   try {
     await sharp(file.buffer).metadata();
@@ -131,6 +159,13 @@ async function checkImage(file) {
   } catch (e) {
     return "Không đọc được ảnh, vui lòng chọn file ảnh khác";
   }
+}
+
+// Bản ghi hiện có -> dạng "form" (để PATCH: trường không gửi thì lấy lại giá trị cũ, rồi validate lại toàn bộ)
+function recordToForm(r, record) {
+  const v = r.toValues(record);
+  if ("available" in v) v.available = v.available ? "on" : "off";
+  return v;
 }
 
 function loadOne(r, id, options = {}) {
@@ -151,24 +186,28 @@ Object.values(resources).forEach((r) => {
     ...readGuard,
     asyncHandler(async (req, res) => {
       const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
-      const details = {};
+      const fields = {};
       let category = null;
       let available = null;
       if (isDishes) {
         if (req.query.category !== undefined) {
           category = String(req.query.category);
           if (!CATEGORIES.includes(category))
-            details.category = `category phải là một trong: ${CATEGORIES.join(", ")}`;
+            fields.category = `category phải là một trong: ${CATEGORIES.join(", ")}`;
         }
         if (req.query.available !== undefined) {
-          if (!["true", "false"].includes(req.query.available)) details.available = "available phải là true hoặc false";
+          if (!["true", "false"].includes(req.query.available))
+            fields.available = "available phải là true hoặc false";
           else available = req.query.available === "true";
         }
       }
-      if (Object.keys(details).length) throw new ApiError("INVALID_QUERY", { details });
+      if (Object.keys(fields).length)
+        throw new ApiError("VALIDATION_FAILED", { fields });
 
       // Query 1 (nhẹ): lọc theo tên (không phân biệt hoa/thường và dấu) rồi sắp xếp A→Z
-      const attrs = isDishes ? ["id", "name", "category", "available"] : ["id", "name"];
+      const attrs = isDishes
+        ? ["id", "name", "category", "available"]
+        : ["id", "name"];
       const slim = (await r.model.findAll({ attributes: attrs }))
         .filter((x) => khop(x.name, q))
         .filter((x) => category === null || x.category === category)
@@ -182,33 +221,41 @@ Object.values(resources).forEach((r) => {
         const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
         const asked = parseInt(req.query.page, 10);
         // page vượt giới hạn thì kẹp lại về trang hợp lệ, không báo lỗi
-        const page = Math.min(Math.max(Number.isInteger(asked) ? asked : 1, 1), totalPages);
+        const page = Math.min(
+          Math.max(Number.isInteger(asked) ? asked : 1, 1),
+          totalPages,
+        );
         pageIds = pageIds.slice((page - 1) * PER_PAGE, page * PER_PAGE);
         meta = { page, perPage: PER_PAGE, totalPages, total };
       }
 
       // Query 2: nạp đầy đủ (kèm quan hệ) chỉ cho các bản ghi cần trả, giữ đúng thứ tự đã sắp xếp
-      const rows = pageIds.length ? await r.model.findAll({ where: { id: pageIds }, include: r.include }) : [];
+      const rows = pageIds.length
+        ? await r.model.findAll({ where: { id: pageIds }, include: r.include })
+        : [];
       const pos = new Map(pageIds.map((id, i) => [id, i]));
       rows.sort((a, b) => pos.get(a.id) - pos.get(b.id));
       ok(res, rows.map(toJson), { meta });
     }),
   );
 
-  // ----- chi tiết: id sai định dạng hoặc không có -> 404
+  // ----- chi tiết: id sai định dạng hoặc không có -> 200 + ok:false + NOT_FOUND
   router.get(
     `${base}/:id`,
     ...readGuard,
     asyncHandler(async (req, res) => {
-      const record = await loadOne(r, getId(req));
-      if (!record) throw new ApiError(NOT_FOUND[r.key]);
+      const record = await loadOne(r, getId(req, r));
+      if (!record) throw notFound(r);
       ok(res, toJson(record));
     }),
   );
 
-  // ----- đọc + kiểm tra dữ liệu gửi lên (dùng chung cho POST và PUT)
+  // ----- đọc + kiểm tra dữ liệu gửi lên (dùng chung cho POST và PATCH)
+  // PATCH (có record): trường không gửi giữ giá trị cũ; chỉ các trường khai báo trong r.fields mới được đọc
+  // (không bao giờ bê nguyên request body vào lệnh ghi DB) và tất cả đều qua r.parse để validate.
   async function readInput(req, record) {
-    const { form, typeErrors } = toForm(r, req.body || {});
+    const { form: sent, typeErrors } = toForm(r, req.body || {});
+    const form = record ? { ...recordToForm(r, record), ...sent } : sent;
     const { errors, data } = await r.parse(form, record);
     const all = { ...errors, ...typeErrors };
     if (isDishes) {
@@ -218,7 +265,11 @@ Object.values(resources).forEach((r) => {
         if (bad) all.image = bad;
       }
     }
-    if (Object.keys(all).length) throw new ApiError("VALIDATION_ERROR", { message: "Dữ liệu chưa hợp lệ.", details: all });
+    if (Object.keys(all).length)
+      throw new ApiError("VALIDATION_FAILED", {
+        message: "Dữ liệu chưa hợp lệ.",
+        fields: all,
+      });
     return data;
   }
 
@@ -228,7 +279,8 @@ Object.values(resources).forEach((r) => {
     requireAdminApi,
     isDishes ? nhanAnh : (req, res, next) => next(),
     asyncHandler(async (req, res) => {
-      if (!isDishes && !req.is("application/json")) throw new ApiError("UNSUPPORTED_MEDIA_TYPE");
+      if (!isDishes && !req.is("application/json"))
+        throw new ApiError("UNSUPPORTED_MEDIA_TYPE");
       const data = await readInput(req, null);
       let img = null;
       if (isDishes && req.file) {
@@ -240,11 +292,11 @@ Object.values(resources).forEach((r) => {
         // transaction: tạo món + gán nguyên liệu là MỘT khối, lỗi giữa chừng thì hoàn tác cả hai
         const created = await sequelize.transaction(async (t) => {
           const rec = await r.model.create(data, { transaction: t });
-          if (isDishes) await rec.setIngredients(data.ingredientIds, { transaction: t });
+          if (isDishes)
+            await rec.setIngredients(data.ingredientIds, { transaction: t });
           return loadOne(r, rec.id, { transaction: t });
         });
-        res.location(`/api${base}/${created.id}`);
-        ok(res, toJson(created), { status: 201 });
+        ok(res, toJson(created));
       } catch (e) {
         if (img) removeImage(img.path).catch(() => {}); // lưu DB lỗi thì dọn ảnh vừa tải lên
         throw e;
@@ -252,16 +304,17 @@ Object.values(resources).forEach((r) => {
     }),
   );
 
-  // ----- sửa (thay toàn bộ)
-  router.put(
+  // ----- sửa một phần (PATCH)
+  router.patch(
     `${base}/:id`,
     requireAdminApi,
     isDishes ? nhanAnh : (req, res, next) => next(),
     asyncHandler(async (req, res) => {
-      if (!isDishes && !req.is("application/json")) throw new ApiError("UNSUPPORTED_MEDIA_TYPE");
-      const id = getId(req);
+      if (!isDishes && !req.is("application/json"))
+        throw new ApiError("UNSUPPORTED_MEDIA_TYPE");
+      const id = getId(req, r);
       const record = await loadOne(r, id);
-      if (!record) throw new ApiError(NOT_FOUND[r.key]);
+      if (!record) throw notFound(r);
       const data = await readInput(req, record);
 
       const oldPath = record.imagePath;
@@ -275,7 +328,8 @@ Object.values(resources).forEach((r) => {
       try {
         updated = await sequelize.transaction(async (t) => {
           await record.update(data, { transaction: t });
-          if (isDishes) await record.setIngredients(data.ingredientIds, { transaction: t });
+          if (isDishes)
+            await record.setIngredients(data.ingredientIds, { transaction: t });
           return loadOne(r, id, { transaction: t });
         });
       } catch (e) {
@@ -287,14 +341,14 @@ Object.values(resources).forEach((r) => {
     }),
   );
 
-  // ----- xóa -> 204
+  // ----- xóa -> { ok:true, data:null }
   router.delete(
     `${base}/:id`,
     requireAdminApi,
     asyncHandler(async (req, res) => {
-      const id = getId(req);
+      const id = getId(req, r);
       const record = await loadOne(r, id);
-      if (!record) throw new ApiError(NOT_FOUND[r.key]);
+      if (!record) throw notFound(r);
       const reason = r.blockDelete ? await r.blockDelete(record) : null;
       if (reason) throw new ApiError("RESOURCE_IN_USE", { message: reason });
 
@@ -305,10 +359,13 @@ Object.values(resources).forEach((r) => {
         try {
           await removeImage(imagePath);
         } catch (e) {
-          console.error(`[api ${req.requestId}] không xóa được ảnh ${imagePath}:`, e.message);
+          console.error(
+            `[api ${req.requestId}] không xóa được ảnh ${imagePath}:`,
+            e.message,
+          );
         }
       }
-      res.status(204).end();
+      ok(res, null);
     }),
   );
 });

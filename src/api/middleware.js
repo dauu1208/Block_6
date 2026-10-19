@@ -44,11 +44,17 @@ function cors(req, res, next) {
       res.setHeader("Access-Control-Expose-Headers", "X-Request-Id");
     } else if (!sameOrigin) {
       // origin lạ: không thêm header CORS và chặn luôn ở server (kể cả request ghi dữ liệu)
-      return fail(res, { ...ERRORS.CORS_NOT_ALLOWED, code: "CORS_NOT_ALLOWED" });
+      return fail(res, {
+        ...ERRORS.CORS_NOT_ALLOWED,
+        code: "CORS_NOT_ALLOWED",
+      });
     }
   }
   if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET,POST,PATCH,DELETE,OPTIONS",
+    );
     res.setHeader(
       "Access-Control-Allow-Headers",
       req.headers["access-control-request-headers"] || "Content-Type",
@@ -66,15 +72,27 @@ function requireAdminApi(req, res, next) {
   next();
 }
 
-// ---------- 404 cho đường dẫn /api/... không tồn tại ----------
+// ---------- 404 (lỗi kỹ thuật, không theo shape nghiệp vụ) cho đường dẫn /api/... không tồn tại ----------
 function apiNotFound(req, res, next) {
   next(new ApiError("ROUTE_NOT_FOUND"));
 }
 
 // ---------- Phân loại lỗi ----------
 const DB_NAME_RE = /^Sequelize(.*Connection|Host|AccessDenied)/;
-const DB_CODES = ["ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "ECONNRESET", "EPIPE", "EAI_AGAIN", "57P01", "57P02", "57P03", "53300"];
-const DB_MSG_RE = /connection terminated|connection timeout|timeout exceeded when trying to connect|server closed the connection/i;
+const DB_CODES = [
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "ECONNRESET",
+  "EPIPE",
+  "EAI_AGAIN",
+  "57P01",
+  "57P02",
+  "57P03",
+  "53300",
+];
+const DB_MSG_RE =
+  /connection terminated|connection timeout|timeout exceeded when trying to connect|server closed the connection/i;
 
 function isDbDown(err) {
   const code = (err.parent && err.parent.code) || err.code;
@@ -91,20 +109,21 @@ function classify(err) {
   // lỗi đọc body (body-parser)
   if (err.type === "entity.parse.failed") return new ApiError("INVALID_JSON");
   if (err.type === "entity.too.large") return new ApiError("PAYLOAD_TOO_LARGE");
-  if (err.status >= 400 && err.status < 500 && err.expose) return new ApiError("BAD_REQUEST");
+  if (err.status >= 400 && err.status < 500 && err.expose)
+    return new ApiError("BAD_REQUEST");
   // lỗi cơ sở dữ liệu: tách hạ tầng (DB sập) khỏi nghiệp vụ (trùng, ràng buộc, validate)
   if (isDbDown(err)) return new ApiError("DB_UNAVAILABLE");
   switch (err.name) {
     case "SequelizeUniqueConstraintError":
-      return new ApiError("DUPLICATE_NAME");
+      return new ApiError("ALREADY_EXISTS");
     case "SequelizeForeignKeyConstraintError":
       return new ApiError("RELATION_CONFLICT");
     case "SequelizeValidationError": {
-      const details = {};
+      const fields = {};
       (err.errors || []).forEach((e) => {
-        if (e.path && !details[e.path]) details[e.path] = "Giá trị không hợp lệ";
+        if (e.path && !fields[e.path]) fields[e.path] = "Giá trị không hợp lệ";
       });
-      return new ApiError("VALIDATION_ERROR", { details });
+      return new ApiError("VALIDATION_FAILED", { fields });
     }
     default:
       return new ApiError("INTERNAL_ERROR");
@@ -117,11 +136,20 @@ function classify(err) {
 function apiErrorHandler(err, req, res, next) {
   const apiErr = classify(err);
   if (apiErr.status >= 500) {
-    console.error(`[api ${req.requestId}] ${req.method} ${req.originalUrl}`, err);
+    console.error(
+      `[api ${req.requestId}] ${req.method} ${req.originalUrl}`,
+      err,
+    );
   }
   // đã lỡ gửi một phần phản hồi thì không được gửi thêm lần nữa: giao cho Express đóng kết nối
   if (res.headersSent) return next(err);
   return fail(res, apiErr);
 }
 
-module.exports = { requestId, cors, requireAdminApi, apiNotFound, apiErrorHandler };
+module.exports = {
+  requestId,
+  cors,
+  requireAdminApi,
+  apiNotFound,
+  apiErrorHandler,
+};

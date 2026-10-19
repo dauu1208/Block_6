@@ -1,7 +1,7 @@
 // Form thêm / sửa. Gửi bằng fetch:
-//   thêm  -> POST /api/<resource>        (201)
-//   sửa   -> PUT  /api/<resource>/:id    (200)
-// Lỗi nhập liệu: backend trả 400 { error: { code: "VALIDATION_ERROR", details: { tênTrường: "thông báo" } } },
+//   thêm  -> POST  /api/<resource>
+//   sửa   -> PATCH /api/<resource>/:id
+// Lỗi nhập liệu: backend trả HTTP 200 { ok:false, error: { code: "VALIDATION_FAILED", fields: { tênTrường: "thông báo" } } },
 // frontend chỉ việc gắn từng thông báo vào đúng ô (giữ nguyên những gì người dùng đã nhập).
 import { api, ApiError } from "../api.js";
 import { setRole } from "../state.js";
@@ -14,22 +14,37 @@ const LOAI_ANH = ["image/jpeg", "image/png", "image/webp"];
 
 // các ô nhập của form
 function truongHtml(f, v, options, L) {
-  const hint = f.hint ? `<small class="goi-y-nho">${esc(f.hint(L))}</small>` : "";
+  const hint = f.hint
+    ? `<small class="goi-y-nho">${esc(f.hint(L))}</small>`
+    : "";
   const id = "f-" + f.name;
   let o;
   if (f.type === "checkbox") {
     o = `<label class="check"><input type="checkbox" name="${f.name}"${v ? " checked" : ""}> ${esc(f.label)}</label>`;
   } else {
     let input;
-    if (f.type === "textarea") input = `<textarea id="${id}" name="${f.name}" rows="4">${esc(v)}</textarea>`;
+    if (f.type === "textarea")
+      input = `<textarea id="${id}" name="${f.name}" rows="4">${esc(v)}</textarea>`;
     else if (f.type === "select")
-      input = `<select id="${id}" name="${f.name}"><option value="">${esc(f.placeholder || "— Không chọn —")}</option>${options[f.name]
-        .map((x) => `<option value="${esc(x.value)}"${String(v) === x.value ? " selected" : ""}>${esc(x.label)}</option>`)
+      input = `<select id="${id}" name="${f.name}"><option value="">${esc(f.placeholder || "— Không chọn —")}</option>${options[
+        f.name
+      ]
+        .map(
+          (x) =>
+            `<option value="${esc(x.value)}"${String(v) === x.value ? " selected" : ""}>${esc(x.label)}</option>`,
+        )
         .join("")}</select>`;
     else if (f.type === "multiselect")
-      input = `<select id="${id}" name="${f.name}" multiple size="6">${options[f.name]
-        .map((x) => `<option value="${esc(x.value)}"${(v || []).includes(x.value) ? " selected" : ""}>${esc(x.label)}</option>`)
-        .join("")}</select><small class="goi-y-nho">Giữ Ctrl/Cmd để chọn nhiều.</small>`;
+      input = `<select id="${id}" name="${f.name}" multiple size="6">${options[
+        f.name
+      ]
+        .map(
+          (x) =>
+            `<option value="${esc(x.value)}"${(v || []).includes(x.value) ? " selected" : ""}>${esc(x.label)}</option>`,
+        )
+        .join(
+          "",
+        )}</select><small class="goi-y-nho">Giữ Ctrl/Cmd để chọn nhiều.</small>`;
     else if (f.type === "image")
       input = `<input type="file" id="${id}" name="${f.name}" accept="image/jpeg,image/png,image/webp">`;
     else
@@ -55,8 +70,15 @@ export async function load(ctx, resKey) {
   const options = {
     category: toOptions(opt.categories),
     unit: toOptions(opt.units),
-    chefId: chefs ? chefs.data.map((c) => ({ value: String(c.id), label: c.name })) : [],
-    ingredientIds: ingredients ? ingredients.data.map((i) => ({ value: String(i.id), label: `${i.name} (${i.unit})` })) : [],
+    chefId: chefs
+      ? chefs.data.map((c) => ({ value: String(c.id), label: c.name }))
+      : [],
+    ingredientIds: ingredients
+      ? ingredients.data.map((i) => ({
+          value: String(i.id),
+          label: `${i.name} (${i.unit})`,
+        }))
+      : [],
   };
   const values = record ? r.toValues(record) : r.empty();
   const tieuDe = (isEdit ? "Sửa " : "Thêm ") + r.singular;
@@ -87,7 +109,8 @@ function docForm(form, r) {
   r.fields.forEach((f) => {
     const el = form.elements[f.name];
     if (f.type === "checkbox") v[f.name] = el.checked;
-    else if (f.type === "multiselect") v[f.name] = [...el.selectedOptions].map((o) => o.value);
+    else if (f.type === "multiselect")
+      v[f.name] = [...el.selectedOptions].map((o) => o.value);
     else if (f.type === "image") v.image = el.files[0] || null;
     else v[f.name] = el.value.trim();
   });
@@ -98,54 +121,85 @@ function xoaLoi(form) {
   $$(".co-loi", form).forEach((t) => t.classList.remove("co-loi"));
   $$(".chu-loi", form).forEach((s) => s.remove());
 }
-function hienLoi(form, details) {
-  Object.entries(details).forEach(([name, msg]) => {
+function hienLoi(form, fields) {
+  Object.entries(fields).forEach(([name, msg]) => {
     const t = $(`.truong[data-field="${name}"]`, form);
     if (!t) return;
     t.classList.add("co-loi");
-    t.insertAdjacentHTML("beforeend", `<small class="chu-loi">${esc(msg)}</small>`);
+    t.insertAdjacentHTML(
+      "beforeend",
+      `<small class="chu-loi">${esc(msg)}</small>`,
+    );
   });
 }
 
 function mount(root, ctx, { r, id, isEdit }) {
-  const form = $("#form", root), loi = $("#loi", root), nut = $(".nut-hang .nut:not(.nut-phu)", form);
+  const form = $("#form", root),
+    loi = $("#loi", root),
+    nut = $(".nut-hang .nut:not(.nut-phu)", form);
   const baoLoi = (msg) => {
     loi.textContent = msg;
     loi.hidden = false;
     loi.scrollIntoView({ block: "nearest" });
   };
 
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    xoaLoi(form);
-    loi.hidden = true;
-    const v = docForm(form, r);
+  form.addEventListener(
+    "submit",
+    async (e) => {
+      e.preventDefault();
+      xoaLoi(form);
+      loi.hidden = true;
+      const v = docForm(form, r);
 
-    // kiểm tra nhanh ảnh ở trình duyệt cho đỡ upload phí (backend vẫn kiểm tra lại)
-    if (v.image && (!LOAI_ANH.includes(v.image.type) || v.image.size > MAX_ANH)) {
-      hienLoi(form, { image: !LOAI_ANH.includes(v.image.type) ? "Chỉ nhận ảnh JPG, PNG hoặc WEBP" : "Ảnh tối đa 3MB" });
-      baoLoi("Dữ liệu chưa hợp lệ, vui lòng kiểm tra lại (giá trị đã nhập được giữ nguyên).");
-      return;
-    }
-
-    nut.disabled = true; // tránh bấm 2 lần gửi trùng
-    try {
-      const saved = isEdit ? await api.update(r.key, id, v) : await api.create(r.key, v);
-      navigate(`/admin/${r.key}` + (isEdit ? `?sel=${saved?.id ?? id}` : ""), {
-        flash: isEdit ? "Cập nhật thành công." : "Thêm thành công.",
-      });
-    } catch (err) {
-      nut.disabled = false;
-      if (!(err instanceof ApiError)) throw err;
-      if (err.status === 401) {
-        setRole(null);
-        return navigate("/login");
+      // kiểm tra nhanh ảnh ở trình duyệt cho đỡ upload phí (backend vẫn kiểm tra lại)
+      if (
+        v.image &&
+        (!LOAI_ANH.includes(v.image.type) || v.image.size > MAX_ANH)
+      ) {
+        hienLoi(form, {
+          image: !LOAI_ANH.includes(v.image.type)
+            ? "Chỉ nhận ảnh JPG, PNG hoặc WEBP"
+            : "Ảnh tối đa 3MB",
+        });
+        baoLoi(
+          "Dữ liệu chưa hợp lệ, vui lòng kiểm tra lại (giá trị đã nhập được giữ nguyên).",
+        );
+        return;
       }
-      if (err.status === 404) return navigate("/admin/" + r.key, { flash: `Không tìm thấy ${r.singular} này (có thể đã bị xóa).` });
-      if (err.status === 400 && Object.keys(err.details).length) {
-        hienLoi(form, err.details);
-        baoLoi("Dữ liệu chưa hợp lệ, vui lòng kiểm tra lại (giá trị đã nhập được giữ nguyên).");
-      } else baoLoi(err.message); // 403, 409, 500, mất kết nối...
-    }
-  }, { signal: ctx.signal });
+
+      nut.disabled = true; // tránh bấm 2 lần gửi trùng
+      try {
+        const saved = isEdit
+          ? await api.update(r.key, id, v)
+          : await api.create(r.key, v);
+        navigate(
+          `/admin/${r.key}` + (isEdit ? `?sel=${saved?.id ?? id}` : ""),
+          {
+            flash: isEdit ? "Cập nhật thành công." : "Thêm thành công.",
+          },
+        );
+      } catch (err) {
+        nut.disabled = false;
+        if (!(err instanceof ApiError)) throw err;
+        if (err.code === "UNAUTHORIZED") {
+          setRole(null);
+          return navigate("/login");
+        }
+        if (err.code === "NOT_FOUND")
+          return navigate("/admin/" + r.key, {
+            flash: `Không tìm thấy ${r.singular} này (có thể đã bị xóa).`,
+          });
+        if (
+          err.code === "VALIDATION_FAILED" &&
+          Object.keys(err.fields).length
+        ) {
+          hienLoi(form, err.fields);
+          baoLoi(
+            "Dữ liệu chưa hợp lệ, vui lòng kiểm tra lại (giá trị đã nhập được giữ nguyên).",
+          );
+        } else baoLoi(err.message); // FORBIDDEN, ALREADY_EXISTS, lỗi 500, mất kết nối...
+      }
+    },
+    { signal: ctx.signal },
+  );
 }

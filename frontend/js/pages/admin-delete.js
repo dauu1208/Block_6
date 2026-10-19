@@ -1,5 +1,5 @@
 // Trang xác nhận xóa. Bấm "Xóa luôn" mới gọi DELETE /api/<resource>/:id
-//   204 = đã xóa | 409 = không được xóa (vd. đầu bếp còn phụ trách món), message do backend viết sẵn
+//   { ok:true, data:null } = đã xóa | RESOURCE_IN_USE = không được xóa (vd. đầu bếp còn phụ trách món), message do backend viết sẵn
 import { api, ApiError } from "../api.js";
 import { setRole } from "../state.js";
 import { navigate } from "../router.js";
@@ -9,7 +9,7 @@ import { $, esc, thanhTren } from "../utils.js";
 export async function load(ctx, resKey) {
   const r = RES[resKey];
   const id = ctx.params.id;
-  const record = await api.get(resKey, id); // 404 nếu không có -> màn hình 404
+  const record = await api.get(resKey, id); // NOT_FOUND nếu không có -> màn hình "không tìm thấy"
   const quayLai = `/admin/${resKey}?sel=${record.id}`;
   return {
     title: "Xóa " + r.singular,
@@ -32,29 +32,37 @@ export async function load(ctx, resKey) {
   </div>
 </main>`,
     mount(root, c) {
-      const nut = $("#xoa", root), loi = $("#loi", root);
-      nut.addEventListener("click", async () => {
-        nut.disabled = true;
-        loi.hidden = true;
-        try {
-          await api.remove(resKey, id);
-          navigate("/admin/" + resKey, { flash: "Xóa thành công." });
-        } catch (err) {
-          if (!(err instanceof ApiError)) throw err;
-          if (err.status === 401) {
-            setRole(null);
-            return navigate("/login");
+      const nut = $("#xoa", root),
+        loi = $("#loi", root);
+      nut.addEventListener(
+        "click",
+        async () => {
+          nut.disabled = true;
+          loi.hidden = true;
+          try {
+            await api.remove(resKey, id);
+            navigate("/admin/" + resKey, { flash: "Xóa thành công." });
+          } catch (err) {
+            if (!(err instanceof ApiError)) throw err;
+            if (err.code === "UNAUTHORIZED") {
+              setRole(null);
+              return navigate("/login");
+            }
+            if (err.code === "NOT_FOUND")
+              return navigate("/admin/" + resKey, {
+                flash: "Mục này đã bị xóa trước đó.",
+              });
+            loi.textContent = err.message;
+            loi.hidden = false;
+            if (err.code === "RESOURCE_IN_USE") {
+              // bị chặn xóa: bỏ câu hỏi và nút xóa, chỉ còn nút quay lại
+              $("#hoi", root).hidden = true;
+              $("#quay", root).hidden = false;
+            } else nut.disabled = false;
           }
-          if (err.status === 404) return navigate("/admin/" + resKey, { flash: "Mục này đã bị xóa trước đó." });
-          loi.textContent = err.message;
-          loi.hidden = false;
-          if (err.status === 409) {
-            // bị chặn xóa: bỏ câu hỏi và nút xóa, chỉ còn nút quay lại
-            $("#hoi", root).hidden = true;
-            $("#quay", root).hidden = false;
-          } else nut.disabled = false;
-        }
-      }, { signal: c.signal });
+        },
+        { signal: c.signal },
+      );
     },
   };
 }
