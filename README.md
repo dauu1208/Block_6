@@ -198,16 +198,59 @@ Block-5-main/
 
 ## 9. Backend REST API (`/api`)
 
-Endpoint và định dạng dữ liệu: xem **[API.md](API.md)** (backend làm đúng hợp đồng này). Phần bổ sung của backend:
+Endpoint, mô hình dữ liệu và danh sách kiểm tra đầy đủ: xem **[API.md](API.md)** (backend làm đúng hợp đồng này). Mục này tóm tắt các quy ước chính và phần riêng của backend.
 
-- Thành công: `{ "success": true, "data": ..., "meta"?: ... }` (hoặc `204`). Lỗi: `{ "success": false, "error": { "type", "code", "message", "details"?, "requestId" } }`.
-- `error.type`: `business` (lỗi nghiệp vụ, 4xx) hoặc `infrastructure` (lỗi hệ thống, 5xx).
-- `error.code` tự quy định, xem `src/api/errors.js` (vd. `VALIDATION_ERROR`, `DISH_NOT_FOUND`, `DUPLICATE_NAME`, `RESOURCE_IN_USE`, `DB_UNAVAILABLE`, `INTERNAL_ERROR`).
-- Danh sách rỗng / tìm không thấy -> `200` với `data: []`; chỉ `/:id` không có mới `404`.
-- Lỗi 5xx chỉ trả câu chung (chuỗi kết nối DB, SQL, stack trace chỉ nằm trong log). Không kết nối được DB -> `503 DB_UNAVAILABLE`.
-- Thêm/sửa món (kèm nguyên liệu) chạy trong transaction; phản hồi chỉ gửi sau khi mọi thao tác bất đồng bộ xong.
-- `GET /api/health` kiểm tra kết nối DB.
-- CORS (chỉ cần khi frontend ở origin khác): đặt `CORS_ORIGIN` trong `.env`; origin lạ bị `403 CORS_NOT_ALLOWED`.
-- Routing phía client: server trả `index.html` cho mọi đường dẫn GET không phải `/api` và không phải file tĩnh.
+### Định dạng phản hồi
+
+| Tình huống            | HTTP        | Body                                                                         |
+| --------------------- | ----------- | ---------------------------------------------------------------------------- |
+| Thành công            | `200`       | `{ "ok": true, "data": ..., "meta"?: ... }` (`meta` chỉ có ở danh sách)      |
+| Xóa thành công        | `200`       | `{ "ok": true, "data": null }`                                               |
+| Lỗi nghiệp vụ đã biết | `200`       | `{ "ok": false, "error": { "code", "message", "fields"? } }`                 |
+| Lỗi kỹ thuật          | `4xx / 5xx` | `{ "error": { "code", "message", "requestId" } }` — **không có** trường `ok` |
+
+Frontend kiểm tra ba tầng (có response không → HTTP status → `ok` true/false) rồi xử lý theo `error.code`, không so sánh nội dung `message`.
+
+### Mã lỗi (`src/api/errors.js`)
+
+- **Lỗi nghiệp vụ (HTTP 200, `ok: false`):** `NOT_FOUND`, `VALIDATION_FAILED` (kèm `fields` theo từng ô nhập), `ALREADY_EXISTS`, `RESOURCE_IN_USE`, `RELATION_CONFLICT`.
+- **Lỗi kỹ thuật (đúng mã HTTP):**
+
+| HTTP      | `code`                                        |
+| --------- | --------------------------------------------- |
+| 400       | `INVALID_JSON`, `BAD_REQUEST`                 |
+| 401       | `UNAUTHORIZED` (chưa chọn vai)                |
+| 403       | `FORBIDDEN` (vai `user`), `CORS_NOT_ALLOWED`  |
+| 404       | `ROUTE_NOT_FOUND` (sai URL `/api/...`)        |
+| 413 / 415 | `PAYLOAD_TOO_LARGE`, `UNSUPPORTED_MEDIA_TYPE` |
+| 500       | `DB_UNAVAILABLE`, `INTERNAL_ERROR`            |
+
+### Endpoint chính
+
+| Phương thức | Đường dẫn                                       | Quyền     |
+| ----------- | ----------------------------------------------- | --------- |
+| GET         | `/api/auth/me`, `/api/options`                  | công khai |
+| POST        | `/api/auth/login`, `/api/auth/logout`           | công khai |
+| GET         | `/api/dishes`, `/api/dishes/:id`                | công khai |
+| GET         | `/api/chefs`, `/api/ingredients` (+ `/:id`)     | admin     |
+| POST        | `/api/dishes`, `/api/chefs`, `/api/ingredients` | admin     |
+| PATCH       | `/api/:resource/:id`                            | admin     |
+| DELETE      | `/api/:resource/:id`                            | admin     |
+
+- Sửa dùng **PATCH** (không có PUT): trường không gửi thì giữ nguyên, nhưng mọi trường vẫn được validate lại.
+- Thêm/sửa **món ăn** dùng `multipart/form-data` (có ảnh JPG/PNG/WEBP ≤ 3MB); đầu bếp và nguyên liệu dùng JSON.
+- Danh sách: `?q=` (tìm theo tên, không phân biệt hoa/thường và dấu tiếng Việt), `?page=` (9 mục/trang, sắp xếp A→Z) hoặc `?all=true` (không phân trang, `meta` chỉ có `total`).
+- Danh sách rỗng hoặc tìm không thấy → `200` với `data: []`; id không có (kể cả sai kiểu như `abc`) → `200` `ok: false` `NOT_FOUND`.
+- Phân quyền kiểm tra **trước** khi đọc dữ liệu: không có vai → `401`, vai `user` → `403`. `GET` không bao giờ ghi dữ liệu.
+
+### Phần bổ sung của backend
+
+- Lỗi 5xx chỉ trả câu chung; chuỗi kết nối DB, SQL và stack trace chỉ nằm trong log kèm `requestId` (cũng gửi qua header `X-Request-Id`). Không kết nối được DB → `500 DB_UNAVAILABLE`.
+- Thêm/sửa món (kèm nguyên liệu) chạy trong transaction; phản hồi chỉ gửi sau khi mọi thao tác bất đồng bộ hoàn tất. Chỉ các trường đã khai báo mới được ghi vào DB.
+- `price` luôn trả về kiểu số.
+- Vai (`role`) được lưu trong cookie, đọc ở `src/middleware/auth.js`.
+- `GET /healthz` (ngoài `/api`, không đụng DB) dùng cho dịch vụ ping giữ máy chủ không "ngủ"; `GET /api/health` kiểm tra kết nối DB.
+- **CORS** (chỉ cần khi SPA ở origin khác API): đặt `CORS_ORIGIN` trong `.env` (nhiều origin cách nhau bằng dấu phẩy); origin lạ bị `403 CORS_NOT_ALLOWED`; preflight `OPTIONS` trả `204`. Bỏ trống thì chỉ cho các origin dev thông dụng (`localhost:3000/5173/4200/5500`). Nên dùng origin cụ thể thay vì `*`.
+- **Routing phía client:** server trả `index.html` cho mọi đường dẫn GET không phải `/api` và không có đuôi file, nên Reload ở `/dishes/2` hay `/admin/dishes/3/edit` vẫn đúng trang.
 
 Các file backend: `src/app.js`, `src/routes/api.js`, `src/api/` (`errors.js`, `response.js`, `middleware.js`, `serializers.js`).
